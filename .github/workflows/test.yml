@@ -1,6 +1,9 @@
 name: Test staticSearch
 on:
   push:
+  pull_request:
+    types:
+      - closed
   delete:
 concurrency:
   group: ${{ github.ref }}
@@ -79,7 +82,7 @@ jobs:
 
   deploy-feature-preview:
     name: Deploy Feature Preview
-    if: github.event_name == 'push' && startsWith(github.ref, 'refs/heads/feature/')
+    if: github.event_name == 'push' && github.ref != 'refs/heads/dev'
     needs: build
     concurrency:
       group: pages-content
@@ -191,7 +194,7 @@ jobs:
 
   cleanup-feature-preview:
     name: Cleanup Feature Preview
-    if: github.event_name == 'delete' && github.event.ref_type == 'branch' && startsWith(github.event.ref, 'feature/')
+    if: (github.event_name == 'delete' && github.event.ref_type == 'branch') || (github.event_name == 'pull_request' && github.event.action == 'closed' && github.event.pull_request.head.repo.full_name == github.repository)
     concurrency:
       group: pages-content
       cancel-in-progress: false
@@ -216,11 +219,18 @@ jobs:
           fetch-depth: 0
           path: pages-content
 
-      - name: Remove deleted branch preview from pages content
+      - name: Remove closed/deleted branch preview from pages content
         id: cleanup_store
         if: steps.checkout_pages_content.outcome == 'success'
         run: |
-          branch_path="${{ github.event.ref }}"
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            branch_path="${{ github.event.pull_request.head.ref }}"
+            reason="closed PR #${{ github.event.pull_request.number }}"
+          else
+            branch_path="${{ github.event.ref }}"
+            reason="deleted branch ${branch_path}"
+          fi
+
           cd pages-content
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
@@ -234,7 +244,7 @@ jobs:
             exit 0
           fi
 
-          git commit -m "ci: remove preview for deleted branch ${{ github.event.ref }}"
+          git commit -m "ci: remove preview for ${reason}"
           git push origin HEAD:pages-content
           echo "changed=true" >> "$GITHUB_OUTPUT"
         env:

@@ -6,6 +6,7 @@ Pushes to `dev` now run an automated GitHub Actions workflow (`.github/workflows
 1. Updates `EDITION` on `dev` with the new version and commits that change automatically.
 1. Runs the project build and tests (`ant -f build.xml test`).
 1. Builds release archives (`ant -f buildRelease.xml all`).
+1. Bundles the generated test pages from `test/` as versioned archives in `dist/`.
 1. Creates and pushes a Git tag in the form `vX.Y.Z`.
 1. Creates a GitHub prerelease with generated notes and attached `dist/*.zip` and `dist/*.tar.gz` artifacts.
 
