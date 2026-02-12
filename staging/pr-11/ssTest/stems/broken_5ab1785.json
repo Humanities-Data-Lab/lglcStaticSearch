@@ -1,0 +1,1 @@
+{"stem":"broken","instances":[{"docUri":"apostrophes.html","score":1,"contexts":[{"form":"broken","weight":"1","pos":238,"context":"..., so should not cause a word to be <mark>broken<\/mark> during tokenization. This is the teꞏst.","fid":"text"}]}]}
