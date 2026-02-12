@@ -33,9 +33,8 @@ jobs:
             const repo = context.repo.repo;
             const prNumber = context.payload.pull_request.number;
             const branch = context.payload.pull_request.head.ref;
-            const safeBranch = branch.replace(/\//g, '-');
             const shortSha = context.payload.pull_request.head.sha.slice(0, 7);
-            const previewUrl = `https://${owner}.github.io/${repo}/previews/branch-${safeBranch}/search.html`;
+            const previewUrl = `https://${owner}.github.io/${repo}/previews/branch-${branch}/search.html`;
             const body = `${marker}
             Feature preview is ready: ${previewUrl}
 
@@ -91,8 +90,8 @@ jobs:
 
       - name: Promote branch preview to staging
         run: |
-          safe_branch="$(echo "${{ github.event.pull_request.head.ref }}" | tr '/' '-')"
-          preview_dir="previews/branch-${safe_branch}"
+          branch_path="${{ github.event.pull_request.head.ref }}"
+          preview_dir="previews/branch-${branch_path}"
           staging_dir="staging/pr-${{ github.event.pull_request.number }}"
 
           cd pages-content

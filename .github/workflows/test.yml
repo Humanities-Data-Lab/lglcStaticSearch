@@ -91,7 +91,7 @@ jobs:
       id-token: write
     environment:
       name: github-pages
-      url: ${{ format('https://{0}.github.io/{1}/previews/branch-{2}/search.html', github.repository_owner, github.event.repository.name, replace(github.ref_name, '/', '-')) }}
+      url: ${{ format('https://{0}.github.io/{1}/previews/branch-{2}/search.html', github.repository_owner, github.event.repository.name, github.ref_name) }}
     steps:
       - name: Self checkout
         uses: actions/checkout@v4
@@ -143,7 +143,7 @@ jobs:
 
       - name: Update pages content for feature branch
         run: |
-          safe_branch="$(echo "${GITHUB_REF_NAME}" | tr '/' '-')"
+          branch_path="${GITHUB_REF_NAME}"
           src="${GITHUB_WORKSPACE}/artifact-test"
           if [ -d "${src}/test" ]; then
             src="${src}/test"
@@ -158,9 +158,9 @@ jobs:
           git remote set-url origin "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
 
           mkdir -p previews
-          rm -rf "previews/branch-${safe_branch}"
-          mkdir -p "previews/branch-${safe_branch}"
-          cp -R "${src}/." "previews/branch-${safe_branch}/"
+          rm -rf "previews/branch-${branch_path}"
+          mkdir -p "previews/branch-${branch_path}"
+          cp -R "${src}/." "previews/branch-${branch_path}/"
 
           git add -A
           if git diff --cached --quiet; then
@@ -178,7 +178,7 @@ jobs:
           mkdir -p site
           cp -R pages-content/. site/
           rm -rf site/.git
-          echo "Feature preview path: previews/branch-$(echo "${GITHUB_REF_NAME}" | tr '/' '-')/search.html"
+          echo "Feature preview path: previews/branch-${GITHUB_REF_NAME}/search.html"
 
       - name: Upload Pages artifact
         uses: actions/upload-pages-artifact@v3
@@ -220,13 +220,13 @@ jobs:
         id: cleanup_store
         if: steps.checkout_pages_content.outcome == 'success'
         run: |
-          safe_branch="$(echo "${{ github.event.ref }}" | tr '/' '-')"
+          branch_path="${{ github.event.ref }}"
           cd pages-content
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git remote set-url origin "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
 
-          rm -rf "previews/branch-${safe_branch}"
+          rm -rf "previews/branch-${branch_path}"
           git add -A
 
           if git diff --cached --quiet; then
