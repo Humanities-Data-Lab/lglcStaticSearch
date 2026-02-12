@@ -8,6 +8,8 @@ on:
 
 permissions:
   contents: write
+  pages: write
+  id-token: write
 
 concurrency:
   group: dev-build-release
@@ -17,6 +19,9 @@ jobs:
   build-and-release:
     if: github.actor != 'github-actions[bot]'
     runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ format('https://{0}.github.io/{1}/test/search.html', github.repository_owner, github.event.repository.name) }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -74,7 +79,7 @@ jobs:
           echo "tag=v${next_version}" >> "$GITHUB_OUTPUT"
 
       - name: Build and test project
-        run: ant -f build.xml test
+        run: ant -f build.xml all makeDebugSearchPage
 
       - name: Build release archives
         run: ant -f buildRelease.xml all
@@ -164,3 +169,105 @@ jobs:
           files: |
             dist/*.zip
             dist/*.tar.gz
+
+      - name: Checkout pages content branch
+        if: github.ref_name == 'dev'
+        id: checkout_pages_content
+        uses: actions/checkout@v4
+        continue-on-error: true
+        with:
+          ref: pages-content
+          fetch-depth: 0
+          path: pages-content
+
+      - name: Initialize pages content branch if missing
+        if: github.ref_name == 'dev' && steps.checkout_pages_content.outcome != 'success'
+        run: |
+          mkdir -p pages-content
+          cd pages-content
+          if [ ! -d .git ]; then
+            git init
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          if git remote get-url origin >/dev/null 2>&1; then
+            git remote set-url origin "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+          else
+            git remote add origin "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+          fi
+          git checkout -B pages-content
+          touch .nojekyll
+          git add .nojekyll
+          if ! git rev-parse --verify HEAD >/dev/null 2>&1; then
+            git commit -m "ci: initialize pages-content store"
+          elif ! git diff --cached --quiet; then
+            git commit -m "ci: initialize pages-content store"
+          fi
+          git push -u origin pages-content
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Update test/ on pages content and push
+        if: github.ref_name == 'dev'
+        shell: bash
+        run: |
+          cd pages-content
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git remote set-url origin "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+          push_with_rebase_retry() {
+            for attempt in 1 2 3; do
+              if git push origin HEAD:pages-content; then
+                return 0
+              fi
+              if [ "${attempt}" -eq 3 ]; then
+                return 1
+              fi
+              echo "Push failed on attempt ${attempt}; rebasing onto latest pages-content."
+              git fetch origin pages-content
+              git rebase origin/pages-content
+            done
+          }
+
+          if [ ! -d .git ]; then
+            echo "pages-content not checked out; skipping deploy."
+            exit 0
+          fi
+          git fetch origin pages-content
+          git checkout -B pages-content origin/pages-content
+
+          rm -rf test
+          mkdir -p test
+          cp -R "${GITHUB_WORKSPACE}/test/." test/
+
+          git add -A
+          if git diff --cached --quiet; then
+            echo "No test/ changes to commit."
+          else
+            git commit -m "ci: update test pages from dev (${{ steps.bump.outputs.tag }})"
+            push_with_rebase_retry
+          fi
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Configure GitHub Pages
+        if: github.ref_name == 'dev'
+        uses: actions/configure-pages@v5
+
+      - name: Assemble site from pages content
+        if: github.ref_name == 'dev'
+        run: |
+          rm -rf site
+          mkdir -p site
+          cp -R pages-content/. site/
+          rm -rf site/.git
+
+      - name: Upload Pages artifact
+        if: github.ref_name == 'dev'
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: ./site
+
+      - name: Deploy test pages to GitHub Pages
+        if: github.ref_name == 'dev'
+        uses: actions/deploy-pages@v4
