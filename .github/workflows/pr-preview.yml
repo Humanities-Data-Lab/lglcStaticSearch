@@ -18,7 +18,7 @@ concurrency:
 
 jobs:
   deploy-preview:
-    if: github.event.action != 'closed' && github.event.pull_request.head.repo.fork == false
+    if: github.event.action != 'closed' && github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
@@ -90,8 +90,83 @@ jobs:
               });
             }
 
+  deploy-merged-staging:
+    if: github.event.action == 'closed' && github.event.pull_request.merged == true && github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout merged commit
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.merge_commit_sha }}
+
+      - name: Set up Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Install Ant
+        run: sudo apt-get update && sudo apt-get install --yes ant
+
+      - name: Build staging content
+        run: ant -f build.xml test
+
+      - name: Assemble staging site directory
+        run: |
+          rm -rf preview-site
+          mkdir -p preview-site
+          cp -R test/. preview-site/
+
+      - name: Deploy merged PR staging site
+        uses: peaceiris/actions-gh-pages@v4
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          publish_branch: gh-pages
+          publish_dir: ./preview-site
+          destination_dir: staging/pr-${{ github.event.pull_request.number }}
+          keep_files: true
+
+      - name: Update comment with staging URL
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const marker = '<!-- staticsearch-pr-preview -->';
+            const prNumber = context.payload.pull_request.number;
+            const shortSha = (context.payload.pull_request.merge_commit_sha || '').slice(0, 7);
+            const stagingUrl = `https://${context.repo.owner}.github.io/${context.repo.repo}/staging/pr-${prNumber}/search.html`;
+            const body = `${marker}
+            PR merged. Staging build is ready: ${stagingUrl}
+
+            Merge commit: \`${shortSha}\``;
+
+            const { data: comments } = await github.rest.issues.listComments({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: prNumber
+            });
+
+            const existing = comments.find(comment =>
+              comment.user.type === 'Bot' && comment.body && comment.body.includes(marker)
+            );
+
+            if (existing) {
+              await github.rest.issues.updateComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                comment_id: existing.id,
+                body
+              });
+            } else {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: prNumber,
+                body
+              });
+            }
+
   cleanup-preview:
-    if: github.event.action == 'closed' && github.event.pull_request.head.repo.fork == false
+    if: github.event.action == 'closed' && github.event.pull_request.merged != true && github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
     steps:
       - name: Checkout gh-pages
@@ -137,7 +212,7 @@ jobs:
             const marker = '<!-- staticsearch-pr-preview -->';
             const prNumber = context.payload.pull_request.number;
             const body = `${marker}
-            Preview removed because this PR is closed.`;
+            Preview removed because this PR was closed without merge.`;
 
             const { data: comments } = await github.rest.issues.listComments({
               owner: context.repo.owner,
