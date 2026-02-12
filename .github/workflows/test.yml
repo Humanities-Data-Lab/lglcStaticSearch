@@ -92,6 +92,7 @@ jobs:
       contents: write
       pages: write
       id-token: write
+      pull-requests: read
     environment:
       name: github-pages
       url: ${{ format('https://{0}.github.io/{1}/previews/branch-{2}/search.html', github.repository_owner, github.event.repository.name, github.ref_name) }}
@@ -99,10 +100,41 @@ jobs:
       - name: Self checkout
         uses: actions/checkout@v4
 
+      - name: Check for open pull request on this branch
+        id: open_pr_for_branch
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const owner = context.repo.owner;
+            const repo = context.repo.repo;
+            const branch = process.env.BRANCH_NAME;
+            const openPulls = await github.paginate(
+              github.rest.pulls.list,
+              {
+                owner,
+                repo,
+                state: 'open',
+                head: `${owner}:${branch}`,
+                per_page: 100
+              }
+            );
+            const hasOpenPr = openPulls.length > 0;
+            core.setOutput('has_open_pr', hasOpenPr ? 'true' : 'false');
+            core.setOutput('numbers', openPulls.map(pr => String(pr.number)).join(','));
+        env:
+          BRANCH_NAME: ${{ github.ref_name }}
+
+      - name: Skip preview deploy when no open PR exists
+        if: steps.open_pr_for_branch.outputs.has_open_pr != 'true'
+        run: |
+          echo "No open PR found for branch ${GITHUB_REF_NAME}; skipping preview deploy."
+
       - name: Configure GitHub Pages
+        if: steps.open_pr_for_branch.outputs.has_open_pr == 'true'
         uses: actions/configure-pages@v5
 
       - name: Restore built test site artifact
+        if: steps.open_pr_for_branch.outputs.has_open_pr == 'true'
         uses: actions/download-artifact@v4
         with:
           name: built-test-site
@@ -110,6 +142,7 @@ jobs:
 
       - name: Checkout pages content branch
         id: checkout_pages_content
+        if: steps.open_pr_for_branch.outputs.has_open_pr == 'true'
         uses: actions/checkout@v4
         continue-on-error: true
         with:
@@ -118,7 +151,7 @@ jobs:
           path: pages-content
 
       - name: Initialize pages content branch if missing
-        if: steps.checkout_pages_content.outcome != 'success'
+        if: steps.open_pr_for_branch.outputs.has_open_pr == 'true' && steps.checkout_pages_content.outcome != 'success'
         run: |
           mkdir -p pages-content
           cd pages-content
@@ -145,6 +178,8 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Update pages content for feature branch
+        if: steps.open_pr_for_branch.outputs.has_open_pr == 'true'
+        shell: bash
         run: |
           branch_path="${GITHUB_REF_NAME}"
           src="${GITHUB_WORKSPACE}/artifact-test"
@@ -159,23 +194,40 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git remote set-url origin "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+          push_with_rebase_retry() {
+            for attempt in 1 2 3; do
+              if git push origin HEAD:pages-content; then
+                return 0
+              fi
+
+              if [ "${attempt}" -eq 3 ]; then
+                return 1
+              fi
+
+              echo "Push failed on attempt ${attempt}; rebasing onto latest pages-content."
+              git fetch origin pages-content
+              git rebase origin/pages-content
+            done
+          }
 
           mkdir -p previews
           rm -rf "previews/branch-${branch_path}"
           mkdir -p "previews/branch-${branch_path}"
           cp -R "${src}/." "previews/branch-${branch_path}/"
+          printf '%s' "${branch_path}" > "previews/branch-${branch_path}/.preview-branch-ref"
 
           git add -A
           if git diff --cached --quiet; then
             echo "No pages-content changes to commit."
           else
             git commit -m "ci: update preview for ${GITHUB_REF_NAME}"
-            git push origin HEAD:pages-content
+            push_with_rebase_retry
           fi
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Assemble site from pages content
+        if: steps.open_pr_for_branch.outputs.has_open_pr == 'true'
         run: |
           rm -rf site
           mkdir -p site
@@ -184,11 +236,13 @@ jobs:
           echo "Feature preview path: previews/branch-${GITHUB_REF_NAME}/search.html"
 
       - name: Upload Pages artifact
+        if: steps.open_pr_for_branch.outputs.has_open_pr == 'true'
         uses: actions/upload-pages-artifact@v3
         with:
           path: ./site
 
       - name: Deploy to GitHub Pages
+        if: steps.open_pr_for_branch.outputs.has_open_pr == 'true'
         id: deployment
         uses: actions/deploy-pages@v4
 
@@ -222,6 +276,7 @@ jobs:
       - name: Remove closed/deleted branch preview from pages content
         id: cleanup_store
         if: steps.checkout_pages_content.outcome == 'success'
+        shell: bash
         run: |
           if [ "${{ github.event_name }}" = "pull_request" ]; then
             branch_path="${{ github.event.pull_request.head.ref }}"
@@ -235,6 +290,21 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git remote set-url origin "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+          push_with_rebase_retry() {
+            for attempt in 1 2 3; do
+              if git push origin HEAD:pages-content; then
+                return 0
+              fi
+
+              if [ "${attempt}" -eq 3 ]; then
+                return 1
+              fi
+
+              echo "Push failed on attempt ${attempt}; rebasing onto latest pages-content."
+              git fetch origin pages-content
+              git rebase origin/pages-content
+            done
+          }
 
           rm -rf "previews/branch-${branch_path}"
           git add -A
@@ -245,7 +315,7 @@ jobs:
           fi
 
           git commit -m "ci: remove preview for ${reason}"
-          git push origin HEAD:pages-content
+          push_with_rebase_retry
           echo "changed=true" >> "$GITHUB_OUTPUT"
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -266,5 +336,154 @@ jobs:
 
       - name: Deploy to GitHub Pages
         if: steps.cleanup_store.outputs.changed == 'true'
+        id: deployment
+        uses: actions/deploy-pages@v4
+
+  prune-orphaned-feature-previews:
+    name: Prune Orphaned Feature Previews
+    if: always() && (github.event_name == 'push' || github.event_name == 'delete' || (github.event_name == 'pull_request' && github.event.action == 'closed'))
+    needs:
+      - deploy-feature-preview
+      - cleanup-feature-preview
+    concurrency:
+      group: pages-content
+      cancel-in-progress: false
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pages: write
+      id-token: write
+      pull-requests: read
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Configure GitHub Pages
+        uses: actions/configure-pages@v5
+
+      - name: Checkout pages content branch
+        id: checkout_pages_content
+        uses: actions/checkout@v4
+        continue-on-error: true
+        with:
+          ref: pages-content
+          fetch-depth: 0
+          path: pages-content
+
+      - name: List open pull request branch refs
+        id: open_prs
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const openPulls = await github.paginate(
+              github.rest.pulls.list,
+              {
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                state: 'open',
+                per_page: 100
+              }
+            );
+            const sameRepoRefs = openPulls
+              .filter(pr => pr.head?.repo?.full_name === `${context.repo.owner}/${context.repo.repo}`)
+              .map(pr => pr.head.ref);
+            core.setOutput('refs', sameRepoRefs.join('\n'));
+
+      - name: Remove orphaned feature previews
+        id: prune_previews
+        if: steps.checkout_pages_content.outcome == 'success'
+        shell: bash
+        run: |
+          cd pages-content
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git remote set-url origin "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+          push_with_rebase_retry() {
+            for attempt in 1 2 3; do
+              if git push origin HEAD:pages-content; then
+                return 0
+              fi
+
+              if [ "${attempt}" -eq 3 ]; then
+                return 1
+              fi
+
+              echo "Push failed on attempt ${attempt}; rebasing onto latest pages-content."
+              git fetch origin pages-content
+              git rebase origin/pages-content
+            done
+          }
+
+          if [ ! -d previews ]; then
+            echo "No feature previews found."
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          open_refs=$'\n'"${{ steps.open_prs.outputs.refs }}"$'\n'
+          changed=false
+
+          while IFS= read -r metadata_file; do
+            [ -f "${metadata_file}" ] || continue
+            preview_dir="$(dirname "${metadata_file}")"
+            branch_path="$(tr -d '\r' < "${metadata_file}")"
+            [ -n "${branch_path}" ] || continue
+
+            if [[ "${open_refs}" != *$'\n'"${branch_path}"$'\n'* ]]; then
+              echo "Removing orphaned feature preview ${preview_dir}"
+              rm -rf "${preview_dir}"
+              changed=true
+            fi
+          done < <(find previews -type f -name .preview-branch-ref)
+
+          # Backward-compatible sweep for previews created before .preview-branch-ref existed.
+          while IFS= read -r search_file; do
+            [ -f "${search_file}" ] || continue
+            preview_dir="$(dirname "${search_file}")"
+            [ -f "${preview_dir}/.preview-branch-ref" ] && continue
+            [ -f "${preview_dir}/search-debug.html" ] || continue
+            [ -d "${preview_dir}/ssTest" ] || continue
+
+            branch_path="${preview_dir#previews/branch-}"
+            if [ "${branch_path}" = "${preview_dir}" ]; then
+              continue
+            fi
+
+            if [[ "${open_refs}" != *$'\n'"${branch_path}"$'\n'* ]]; then
+              echo "Removing orphaned legacy feature preview ${preview_dir}"
+              rm -rf "${preview_dir}"
+              changed=true
+            fi
+          done < <(find previews -type f -name search.html)
+
+          git add -A
+          if git diff --cached --quiet; then
+            echo "No orphaned feature previews found."
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          git commit -m "ci: remove orphaned feature previews"
+          push_with_rebase_retry
+          echo "changed=true" >> "$GITHUB_OUTPUT"
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Assemble site from pages content
+        if: steps.prune_previews.outputs.changed == 'true'
+        run: |
+          rm -rf site
+          mkdir -p site
+          cp -R pages-content/. site/
+          rm -rf site/.git
+
+      - name: Upload Pages artifact
+        if: steps.prune_previews.outputs.changed == 'true'
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: ./site
+
+      - name: Deploy to GitHub Pages
+        if: steps.prune_previews.outputs.changed == 'true'
         id: deployment
         uses: actions/deploy-pages@v4

@@ -138,7 +138,7 @@ jobs:
             exit 0
           fi
           git add EDITION
-          git commit -m "ci: bump EDITION to ${{ steps.bump.outputs.version }} [skip ci]"
+          git commit -m "ci: bump EDITION to ${{ steps.bump.outputs.version }}"
           git push origin HEAD:dev
 
       - name: Create and push release tag
