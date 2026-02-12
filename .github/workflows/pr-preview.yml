@@ -205,7 +205,7 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Assemble site from pages content
-        if: steps.prune_staging.outputs.changed == 'true'
+        if: steps.prune_staging.outputs.changed == 'true' && needs.promote_merged_preview.result != 'success'
         run: |
           rm -rf site
           mkdir -p site
@@ -213,12 +213,12 @@ jobs:
           rm -rf site/.git
 
       - name: Upload Pages artifact
-        if: steps.prune_staging.outputs.changed == 'true'
+        if: steps.prune_staging.outputs.changed == 'true' && needs.promote_merged_preview.result != 'success'
         uses: actions/upload-pages-artifact@v3
         with:
           path: ./site
 
       - name: Deploy updated Pages content
-        if: steps.prune_staging.outputs.changed == 'true'
+        if: steps.prune_staging.outputs.changed == 'true' && needs.promote_merged_preview.result != 'success'
         id: deployment
         uses: actions/deploy-pages@v4
