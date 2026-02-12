@@ -3,71 +3,19 @@ name: PR Preview Pages
 on:
   pull_request_target:
     types:
-      - opened
-      - reopened
-      - synchronize
       - closed
 
 permissions:
   contents: write
   pages: write
   id-token: write
-  issues: write
-  pull-requests: write
+  pull-requests: read
 
 concurrency:
   group: pr-preview-${{ github.event.pull_request.number }}
   cancel-in-progress: true
 
 jobs:
-  comment-feature-preview:
-    if: github.event.action != 'closed' && github.event.pull_request.head.repo.full_name == github.repository
-    runs-on: ubuntu-latest
-    steps:
-      - name: Add or update PR preview comment
-        uses: actions/github-script@v7
-        with:
-          script: |
-            const marker = '<!-- staticsearch-feature-preview -->';
-            const owner = context.repo.owner;
-            const repo = context.repo.repo;
-            const prNumber = context.payload.pull_request.number;
-            const branch = context.payload.pull_request.head.ref;
-            const shortSha = context.payload.pull_request.head.sha.slice(0, 7);
-            const previewUrl = `https://${owner}.github.io/${repo}/previews/branch-${branch}/search.html`;
-            const body = `${marker}
-            Feature preview is ready: ${previewUrl}
-
-            Branch: \`${branch}\`
-            Commit: \`${shortSha}\``;
-
-            const { data: comments } = await github.rest.issues.listComments({
-              owner,
-              repo,
-              issue_number: prNumber,
-              per_page: 100
-            });
-
-            const existing = comments.find(comment =>
-              comment.user.type === 'Bot' && comment.body && comment.body.includes(marker)
-            );
-
-            if (existing) {
-              await github.rest.issues.updateComment({
-                owner,
-                repo,
-                comment_id: existing.id,
-                body
-              });
-            } else {
-              await github.rest.issues.createComment({
-                owner,
-                repo,
-                issue_number: prNumber,
-                body
-              });
-            }
-
   promote-merged-preview:
     if: github.event.action == 'closed' && github.event.pull_request.merged == true && github.event.pull_request.head.repo.full_name == github.repository
     concurrency:
@@ -134,41 +82,101 @@ jobs:
         id: deployment
         uses: actions/deploy-pages@v4
 
-      - name: Update comment with staging URL
+  cleanup-orphaned-staging:
+    if: always() && github.event.action == 'closed' && github.event.pull_request.head.repo.full_name == github.repository
+    needs: promote-merged-preview
+    concurrency:
+      group: pages-content
+      cancel-in-progress: false
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pages: write
+      id-token: write
+      pull-requests: read
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Configure GitHub Pages
+        uses: actions/configure-pages@v5
+
+      - name: Checkout pages content branch
+        id: checkout_pages_content
+        uses: actions/checkout@v4
+        continue-on-error: true
+        with:
+          ref: pages-content
+          fetch-depth: 0
+          path: pages-content
+
+      - name: List open pull requests
+        id: open_prs
         uses: actions/github-script@v7
         with:
           script: |
-            const marker = '<!-- staticsearch-pr-preview -->';
-            const prNumber = context.payload.pull_request.number;
-            const shortSha = (context.payload.pull_request.merge_commit_sha || '').slice(0, 7);
-            const stagingUrl = `https://${context.repo.owner}.github.io/${context.repo.repo}/staging/pr-${prNumber}/search.html`;
-            const body = `${marker}
-            PR merged. Staging build is ready: ${stagingUrl}
-
-            Merge commit: \`${shortSha}\``;
-
-            const { data: comments } = await github.rest.issues.listComments({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              issue_number: prNumber
-            });
-
-            const existing = comments.find(comment =>
-              comment.user.type === 'Bot' && comment.body && comment.body.includes(marker)
+            const openPulls = await github.paginate(
+              github.rest.pulls.list,
+              {
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                state: 'open',
+                per_page: 100
+              }
             );
+            const numbers = openPulls.map(pr => String(pr.number));
+            core.setOutput('numbers', numbers.join(' '));
 
-            if (existing) {
-              await github.rest.issues.updateComment({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                comment_id: existing.id,
-                body
-              });
-            } else {
-              await github.rest.issues.createComment({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                issue_number: prNumber,
-                body
-              });
-            }
+      - name: Remove orphaned staging pages
+        id: prune_staging
+        if: steps.checkout_pages_content.outcome == 'success'
+        run: |
+          cd pages-content
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git remote set-url origin "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+
+          open_numbers=" ${{ steps.open_prs.outputs.numbers }} "
+          changed=false
+
+          shopt -s nullglob
+          for dir in staging/pr-*; do
+            [ -d "${dir}" ] || continue
+            pr_number="${dir#staging/pr-}"
+            if [[ "${open_numbers}" != *" ${pr_number} "* ]]; then
+              echo "Removing orphaned staging page ${dir}"
+              rm -rf "${dir}"
+              changed=true
+            fi
+          done
+
+          if [ "${changed}" = true ]; then
+            git add -A
+            git commit -m "ci: remove orphaned staging pages"
+            git push origin HEAD:pages-content
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "No orphaned staging pages found."
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          fi
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Assemble site from pages content
+        if: steps.prune_staging.outputs.changed == 'true'
+        run: |
+          rm -rf site
+          mkdir -p site
+          cp -R pages-content/. site/
+          rm -rf site/.git
+
+      - name: Upload Pages artifact
+        if: steps.prune_staging.outputs.changed == 'true'
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: ./site
+
+      - name: Deploy updated Pages content
+        if: steps.prune_staging.outputs.changed == 'true'
+        id: deployment
+        uses: actions/deploy-pages@v4
