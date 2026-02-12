@@ -18,10 +18,10 @@ jobs:
       - name: Self checkout
         uses: actions/checkout@v4
 
-      - name: Run test build
-        run: ant -f "${{ github.workspace }}/build.xml" test
+      - name: Build test site
+        run: ant -f "${{ github.workspace }}/build.xml" all makeDebugSearchPage
 
-      - name: Verify test build outputs
+      - name: Verify test site outputs
         run: |
           test -f "${GITHUB_WORKSPACE}/test/search.html"
           test -f "${GITHUB_WORKSPACE}/test/search-debug.html"
