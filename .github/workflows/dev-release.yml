@@ -4,7 +4,6 @@ on:
   push:
     branches:
       - dev
-      - feature/dev-release-ci-fix
   workflow_dispatch:
 
 permissions:
