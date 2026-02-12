@@ -1,5 +1,16 @@
+# =============================================================================
+# Dev Build and Release
+# =============================================================================
+# On push to `dev` (or manual run): builds the project with Ant, bumps the
+# EDITION file (semver patch), creates a prerelease tag and GitHub Release
+# with dist archives, updates the pages-content branch with test/ output, and
+# deploys the test site to GitHub Pages (e.g. .../test/search.html).
+# Skips runs triggered by github-actions[bot] to avoid loops from CI commits.
+# =============================================================================
+
 name: Dev Build and Release
 
+# Triggered by pushes to dev or via "Run workflow" in the Actions tab.
 on:
   push:
     branches:
@@ -11,11 +22,16 @@ permissions:
   pages: write
   id-token: write
 
+# Only one dev release run at a time; queue additional runs.
 concurrency:
   group: dev-build-release
   cancel-in-progress: false
 
 jobs:
+  # ---------------------------------------------------------------------------
+  # Single job: build, version bump, release assets, update pages-content test/
+  # and deploy to GitHub Pages.
+  # ---------------------------------------------------------------------------
   build-and-release:
     if: github.actor != 'github-actions[bot]'
     runs-on: ubuntu-latest
@@ -28,6 +44,7 @@ jobs:
         with:
           fetch-depth: 0
 
+      # Java 17 (Temurin) required for the Ant-based build.
       - name: Set up Java
         uses: actions/setup-java@v4
         with:
@@ -37,11 +54,13 @@ jobs:
       - name: Install Ant
         run: sudo apt-get update && sudo apt-get install --yes ant
 
+      # Used for commits and tag push later in this job.
       - name: Configure git identity
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
+      # Ensure we're on latest dev with tags (for clean bump and push).
       - name: Sync branch state
         run: |
           branch="${{ github.ref_name }}"
@@ -49,6 +68,8 @@ jobs:
           git checkout "${branch}"
           git pull --rebase origin "${branch}"
 
+      # Read EDITION, increment patch (X.Y.Z -> X.Y.Z+1), write back; outputs version and tag.
+      # Supports semver with optional prerelease (e.g. 1.0.0-beta) and legacy format (e.g. 2.0.1beta).
       - name: Bump EDITION semver patch
         id: bump
         run: |
@@ -78,12 +99,15 @@ jobs:
           echo "version=${next_version}" >> "$GITHUB_OUTPUT"
           echo "tag=v${next_version}" >> "$GITHUB_OUTPUT"
 
+      # Produces test/ (search.html, search-debug.html, ssTest) and other build outputs.
       - name: Build project
         run: ant -f build.xml all makeDebugSearchPage
 
+      # Creates release artifacts (e.g. zip/tar) under dist/.
       - name: Build release archives
         run: ant -f buildRelease.xml all
 
+      # Package test/ into staticSearch-test-pages_<version>.tar.gz and .zip in dist/ for the release.
       - name: Bundle built test pages
         run: |
           python3 - <<'PY'
@@ -135,6 +159,7 @@ jobs:
         env:
           RELEASE_VERSION: ${{ steps.bump.outputs.version }}
 
+      # Persist the new version in the repo (only on dev) so next run bumps again.
       - name: Commit and push EDITION
         if: github.ref_name == 'dev'
         run: |
@@ -146,6 +171,7 @@ jobs:
           git commit -m "ci: bump EDITION to ${{ steps.bump.outputs.version }}"
           git push origin HEAD:dev
 
+      # Create annotated tag vX.Y.Z (or reuse if already present, e.g. re-run).
       - name: Create and push release tag
         if: github.ref_name == 'dev'
         run: |
@@ -157,6 +183,7 @@ jobs:
           git tag -a "${tag}" -m "Release ${tag}"
           git push origin "${tag}"
 
+      # Create a prerelease for the tag and attach dist/*.zip and dist/*.tar.gz.
       - name: Create GitHub prerelease
         if: github.ref_name == 'dev'
         uses: softprops/action-gh-release@v2
@@ -170,6 +197,7 @@ jobs:
             dist/*.zip
             dist/*.tar.gz
 
+      # Clone pages-content (where test/, staging/, previews live). Optional for non-dev.
       - name: Checkout pages content branch
         if: github.ref_name == 'dev'
         id: checkout_pages_content
@@ -180,6 +208,7 @@ jobs:
           fetch-depth: 0
           path: pages-content
 
+      # If pages-content doesn't exist, create it: init, .nojekyll, first commit, push.
       - name: Initialize pages content branch if missing
         if: github.ref_name == 'dev' && steps.checkout_pages_content.outcome != 'success'
         run: |
@@ -207,6 +236,7 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
+      # Replace pages-content/test/ with built test/ from this run; commit and push with rebase retry (3x).
       - name: Update test/ on pages content and push
         if: github.ref_name == 'dev'
         shell: bash
@@ -250,10 +280,12 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
+      # Required before deploy-pages when deploying from this workflow.
       - name: Configure GitHub Pages
         if: github.ref_name == 'dev'
         uses: actions/configure-pages@v5
 
+      # Copy pages-content (including updated test/) into site/ without .git for deployment.
       - name: Assemble site from pages content
         if: github.ref_name == 'dev'
         run: |
@@ -268,6 +300,7 @@ jobs:
         with:
           path: ./site
 
+      # Publish the site so test pages are live at .../test/search.html.
       - name: Deploy test pages to GitHub Pages
         if: github.ref_name == 'dev'
         uses: actions/deploy-pages@v4

@@ -1,3 +1,13 @@
+# =============================================================================
+# Test staticSearch
+# =============================================================================
+# On push (except dev): build with Ant, run Playwright browser tests, and
+# deploy a feature preview to GitHub Pages when the branch has an open PR.
+# On PR closed or branch delete: remove that branch's preview and prune
+# any orphaned previews. The pages-content branch holds previews at
+# previews/branch-<branch>/ and is deployed as a single GitHub Pages site.
+# =============================================================================
+
 name: Test staticSearch
 on:
   push:
@@ -10,6 +20,11 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  # ---------------------------------------------------------------------------
+  # Build the project and produce the test site (test/search.html, etc.).
+  # Only on push to non-dev branches. Uploads artifact for browser job and
+  # deploy-feature-preview.
+  # ---------------------------------------------------------------------------
   build:
     name: Build
     if: github.event_name == 'push' && github.ref != 'refs/heads/dev'
@@ -18,15 +33,18 @@ jobs:
       - name: Self checkout
         uses: actions/checkout@v4
 
+      # Ant build produces test/ with search.html, search-debug.html, ssTest.
       - name: Build test site
         run: ant -f "${{ github.workspace }}/build.xml" all makeDebugSearchPage
 
+      # Fail the job if expected outputs are missing.
       - name: Verify test site outputs
         run: |
           test -f "${GITHUB_WORKSPACE}/test/search.html"
           test -f "${GITHUB_WORKSPACE}/test/search-debug.html"
           test -d "${GITHUB_WORKSPACE}/test/ssTest"
 
+      # Persist test/ for the browser job and deploy-feature-preview.
       - name: Save built test site artifact
         uses: actions/upload-artifact@v4
         with:
@@ -34,6 +52,10 @@ jobs:
           path: ${{ github.workspace }}/test
           retention-days: 7
 
+  # ---------------------------------------------------------------------------
+  # Run Playwright tests against the built test site (Chromium). Only on push
+  # to non-dev. Depends on build artifact.
+  # ---------------------------------------------------------------------------
   browser:
     name: Browser Test
     if: github.event_name == 'push' && github.ref != 'refs/heads/dev'
@@ -49,6 +71,7 @@ jobs:
           name: built-test-site
           path: ${{ github.workspace }}/artifact-test
 
+      # Artifact may be workspace/test or artifact-test/test; normalize to workspace/test.
       - name: Normalize built test site artifact
         run: |
           src="${GITHUB_WORKSPACE}/artifact-test"
@@ -66,12 +89,14 @@ jobs:
       - name: Install Playwright
         run: npm install @playwright/test @types/node
 
+      # Chromium only; config in ci/playwright.config.js.
       - name: Install Browsers
         run: npx playwright install --with-deps chromium
 
       - name: Run Playwright Tests
         run: npx playwright test --config "${{ github.workspace }}/ci/playwright.config.js"
 
+      # Upload results on pass or fail for debugging (e.g. screenshots).
       - name: Save test results
         uses: actions/upload-artifact@v4
         if: always()
@@ -80,6 +105,11 @@ jobs:
           path: ${{ github.workspace }}/ci/test-results
           retention-days: 30
 
+  # ---------------------------------------------------------------------------
+  # Deploy this branch's build to GitHub Pages as a feature preview, only when
+  # there is an open PR for this branch. Writes to pages-content at
+  # previews/branch-<branch>/ and deploys the full pages-content site.
+  # ---------------------------------------------------------------------------
   deploy-feature-preview:
     name: Deploy Feature Preview
     if: github.event_name == 'push' && github.ref != 'refs/heads/dev'
@@ -100,6 +130,7 @@ jobs:
       - name: Self checkout
         uses: actions/checkout@v4
 
+      # If no open PR has head = this branch, we skip deploy (no preview URL to maintain).
       - name: Check for open pull request on this branch
         id: open_pr_for_branch
         uses: actions/github-script@v7
@@ -129,10 +160,12 @@ jobs:
         run: |
           echo "No open PR found for branch ${GITHUB_REF_NAME}; skipping preview deploy."
 
+      # Required before deploy-pages.
       - name: Configure GitHub Pages
         if: steps.open_pr_for_branch.outputs.has_open_pr == 'true'
         uses: actions/configure-pages@v5
 
+      # Use the same built test site as the browser job (from build artifact).
       - name: Restore built test site artifact
         if: steps.open_pr_for_branch.outputs.has_open_pr == 'true'
         uses: actions/download-artifact@v4
@@ -140,6 +173,7 @@ jobs:
           name: built-test-site
           path: ${{ github.workspace }}/artifact-test
 
+      # Clone branch that stores previews + staging + test; create if missing.
       - name: Checkout pages content branch
         id: checkout_pages_content
         if: steps.open_pr_for_branch.outputs.has_open_pr == 'true'
@@ -150,6 +184,7 @@ jobs:
           fetch-depth: 0
           path: pages-content
 
+      # First-time setup: init repo, .nojekyll, initial commit, push pages-content.
       - name: Initialize pages content branch if missing
         if: steps.open_pr_for_branch.outputs.has_open_pr == 'true' && steps.checkout_pages_content.outcome != 'success'
         run: |
@@ -177,6 +212,7 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
+      # Write built test site to previews/branch-<branch>/ on pages-content; push with rebase retry (3x).
       - name: Update pages content for feature branch
         if: steps.open_pr_for_branch.outputs.has_open_pr == 'true'
         shell: bash
@@ -226,6 +262,7 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
+      # Copy full pages-content (all previews + staging + test) into site/ for deployment (no .git).
       - name: Assemble site from pages content
         if: steps.open_pr_for_branch.outputs.has_open_pr == 'true'
         run: |
@@ -241,11 +278,16 @@ jobs:
         with:
           path: ./site
 
+      # Publish so preview is available at .../previews/branch-<branch>/search.html.
       - name: Deploy to GitHub Pages
         if: steps.open_pr_for_branch.outputs.has_open_pr == 'true'
         id: deployment
         uses: actions/deploy-pages@v4
 
+  # ---------------------------------------------------------------------------
+  # When a PR is closed or a branch is deleted, remove that branch's preview
+  # from pages-content (previews/branch-<branch>/) and redeploy.
+  # ---------------------------------------------------------------------------
   cleanup-feature-preview:
     name: Cleanup Feature Preview
     if: (github.event_name == 'delete' && github.event.ref_type == 'branch') || (github.event_name == 'pull_request' && github.event.action == 'closed' && github.event.pull_request.head.repo.full_name == github.repository)
@@ -273,6 +315,7 @@ jobs:
           fetch-depth: 0
           path: pages-content
 
+      # Delete previews/branch-<branch> for the closed PR or deleted branch; push with retry.
       - name: Remove closed/deleted branch preview from pages content
         id: cleanup_store
         if: steps.checkout_pages_content.outcome == 'success'
@@ -320,6 +363,7 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
+      # Rebuild site only when we actually removed a preview dir.
       - name: Assemble site from pages content
         if: steps.cleanup_store.outputs.changed == 'true'
         run: |
@@ -370,6 +414,7 @@ jobs:
           fetch-depth: 0
           path: pages-content
 
+      # Branch refs (e.g. feature/foo) that still have an open PR; others are orphaned.
       - name: List open pull request branch refs
         id: open_prs
         uses: actions/github-script@v7
@@ -389,6 +434,7 @@ jobs:
               .map(pr => pr.head.ref);
             core.setOutput('refs', sameRepoRefs.join('\n'));
 
+      # Delete previews/branch-<ref> for refs not in the open PR list; commit and push with retry.
       - name: Remove orphaned feature previews
         id: prune_previews
         if: steps.checkout_pages_content.outcome == 'success'
@@ -469,6 +515,7 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
+      # Rebuild and upload only when we removed at least one orphaned preview.
       - name: Assemble site from pages content
         if: steps.prune_previews.outputs.changed == 'true'
         run: |

@@ -1,21 +1,38 @@
+# =============================================================================
+# PR Preview Pages
+# =============================================================================
+# When a PR from the same repo is merged, this workflow promotes its branch
+# preview (from the pages-content branch) into a permanent "staging" URL so
+# the merged result stays viewable at .../staging/pr-<number>/search.html.
+# A second job then removes staging folders for PRs that are no longer open
+# (orphaned staging pages).
+# =============================================================================
+
 name: PR Preview Pages
 
+# Runs when any pull request is closed (merged or not).
 on:
   pull_request_target:
     types:
       - closed
 
+# Needed to push to pages-content and deploy to GitHub Pages.
 permissions:
   contents: write
   pages: write
   id-token: write
   pull-requests: read
 
+# One run per PR number; a new close cancels the previous run for that PR.
 concurrency:
   group: pr-preview-${{ github.event.pull_request.number }}
   cancel-in-progress: true
 
 jobs:
+  # ---------------------------------------------------------------------------
+  # Promote merged PR's branch preview to staging (permanent preview URL).
+  # Only runs when: PR was merged (not just closed) and head is from this repo.
+  # ---------------------------------------------------------------------------
   promote-merged-preview:
     if: github.event.action == 'closed' && github.event.pull_request.merged == true && github.event.pull_request.head.repo.full_name == github.repository
     concurrency:
@@ -26,9 +43,11 @@ jobs:
       name: github-pages
       url: ${{ format('https://{0}.github.io/{1}/staging/pr-{2}/search.html', github.repository_owner, github.event.repository.name, github.event.pull_request.number) }}
     steps:
+      # Prepare the runner for GitHub Pages deployment (required before deploy-pages).
       - name: Configure GitHub Pages
         uses: actions/configure-pages@v5
 
+      # Clone the pages-content branch (holds previews + staging; separate from main repo).
       - name: Checkout pages content branch
         uses: actions/checkout@v4
         with:
@@ -36,6 +55,8 @@ jobs:
           fetch-depth: 0
           path: pages-content
 
+      # Copy previews/branch-<branch> to staging/pr-<number>, commit and push to pages-content.
+      # Uses up to 3 attempts: on push conflict, fetches latest pages-content and retries.
       - name: Promote branch preview to staging
         shell: bash
         run: |
@@ -84,6 +105,7 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
+      # Build the static site directory: copy pages-content without .git (Pages deploys files only).
       - name: Assemble site from pages content
         run: |
           rm -rf site
@@ -91,15 +113,22 @@ jobs:
           cp -R pages-content/. site/
           rm -rf site/.git
 
+      # Package the site for GitHub Pages (required input for deploy-pages).
       - name: Upload Pages artifact
         uses: actions/upload-pages-artifact@v3
         with:
           path: ./site
 
+      # Publish the assembled site to GitHub Pages (serves staging + all other content).
       - name: Deploy merged staging to GitHub Pages
         id: deployment
         uses: actions/deploy-pages@v4
 
+  # ---------------------------------------------------------------------------
+  # Remove staging folders for PRs that are no longer open (e.g. closed unmerged).
+  # Runs after promote-merged-preview (success or failure). Only redeploys when
+  # we actually removed something and the promote job did not succeed.
+  # ---------------------------------------------------------------------------
   cleanup-orphaned-staging:
     if: always() && github.event.action == 'closed' && github.event.pull_request.head.repo.full_name == github.repository
     needs: promote-merged-preview
@@ -114,6 +143,7 @@ jobs:
       name: github-pages
       url: ${{ format('https://{0}.github.io/{1}/', github.repository_owner, github.event.repository.name) }}
     steps:
+      # If pages-content doesn't exist yet, this job effectively no-ops (continue-on-error).
       - name: Checkout pages content branch
         id: checkout_pages_content
         uses: actions/checkout@v4
@@ -123,6 +153,7 @@ jobs:
           fetch-depth: 0
           path: pages-content
 
+      # Get the list of open PR numbers; staging/pr-* dirs not in this list are orphaned.
       - name: List open pull requests
         id: open_prs
         uses: actions/github-script@v7
@@ -140,6 +171,7 @@ jobs:
             const numbers = openPulls.map(pr => String(pr.number));
             core.setOutput('numbers', numbers.join(' '));
 
+      # Delete staging/pr-<n> for each n not in the open PR list; push with retry (up to 3 attempts).
       - name: Remove orphaned staging pages
         id: prune_staging
         if: steps.checkout_pages_content.outcome == 'success'
@@ -199,6 +231,7 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
+      # Rebuild site only when we removed orphans and promote didn't already deploy.
       - name: Assemble site from pages content
         if: steps.prune_staging.outputs.changed == 'true' && needs.promote_merged_preview.result != 'success'
         run: |
@@ -213,6 +246,7 @@ jobs:
         with:
           path: ./site
 
+      # Redeploy so the live site no longer serves removed staging folders.
       - name: Deploy updated Pages content
         if: steps.prune_staging.outputs.changed == 'true' && needs.promote_merged_preview.result != 'success'
         id: deployment
