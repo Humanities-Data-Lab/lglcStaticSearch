@@ -1,54 +1,260 @@
 name: Test staticSearch
 on:
-    push:
-    repository_dispatch:
+  push:
+  delete:
 concurrency:
-    group: ${{ github.ref }}
-    cancel-in-progress: false
+  group: ${{ github.ref }}
+  cancel-in-progress: false
 
 jobs:
-   test:
-        name: Test
-        runs-on: ubuntu-latest
-        steps:
-            # First checkout this repo
-            - name: Self checkout
-              uses: actions/checkout@v4
+  build:
+    name: Build
+    if: github.event_name == 'push' && github.ref != 'refs/heads/dev'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Self checkout
+        uses: actions/checkout@v4
 
-            # Build everything
-            - name: Run test 
-              run: ant -f ${{ github.workspace }}/build.xml test
-    
-   browser:
-        name: Browser Test
-        runs-on: ubuntu-latest
-        steps:
-            # First checkout this repo
-            - name: Self checkout
-              uses: actions/checkout@v4
+      - name: Run test build
+        run: ant -f "${{ github.workspace }}/build.xml" test
 
-            - name: Setup node
-              uses: actions/setup-node@v4
-  
-            - name: Install Playwright
-              run: npm install @playwright/test @types/node
+      - name: Verify test build outputs
+        run: |
+          test -f "${GITHUB_WORKSPACE}/test/search.html"
+          test -f "${GITHUB_WORKSPACE}/test/search-debug.html"
+          test -d "${GITHUB_WORKSPACE}/test/ssTest"
 
-            - name: Install Browsers
-              run: npx playwright install --with-deps chromium
+      - name: Save built test site artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: built-test-site
+          path: ${{ github.workspace }}/test
+          retention-days: 7
 
-            # Build everything
-            - name: Run test 
-              run: ant -f ${{ github.workspace }}/build.xml test
-            
-            - name: Run Playwright Tests
-              run: npx playwright test --config ${{ github.workspace }}/ci/playwright.config.js
+  browser:
+    name: Browser Test
+    if: github.event_name == 'push' && github.ref != 'refs/heads/dev'
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Self checkout
+        uses: actions/checkout@v4
 
-            - name: Save test results
-              uses: actions/upload-artifact@v4
-              if: always()
-              with:
-                name: test-results
-                path: ${{ github.workspace }}/ci/test-results
-                retention-days: 30
-              
-          
+      - name: Restore built test site artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: built-test-site
+          path: ${{ github.workspace }}/artifact-test
+
+      - name: Normalize built test site artifact
+        run: |
+          src="${GITHUB_WORKSPACE}/artifact-test"
+          if [ -d "${src}/test" ]; then
+            src="${src}/test"
+          fi
+
+          rm -rf "${GITHUB_WORKSPACE}/test"
+          mkdir -p "${GITHUB_WORKSPACE}/test"
+          cp -R "${src}/." "${GITHUB_WORKSPACE}/test/"
+
+      - name: Setup node
+        uses: actions/setup-node@v4
+
+      - name: Install Playwright
+        run: npm install @playwright/test @types/node
+
+      - name: Install Browsers
+        run: npx playwright install --with-deps chromium
+
+      - name: Run Playwright Tests
+        run: npx playwright test --config "${{ github.workspace }}/ci/playwright.config.js"
+
+      - name: Save test results
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: test-results
+          path: ${{ github.workspace }}/ci/test-results
+          retention-days: 30
+
+  deploy-feature-preview:
+    name: Deploy Feature Preview
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/heads/feature/')
+    needs: build
+    concurrency:
+      group: pages-content
+      cancel-in-progress: false
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ format('https://{0}.github.io/{1}/previews/branch-{2}/search.html', github.repository_owner, github.event.repository.name, github.ref_name) }}
+    steps:
+      - name: Self checkout
+        uses: actions/checkout@v4
+
+      - name: Configure GitHub Pages
+        uses: actions/configure-pages@v5
+
+      - name: Restore built test site artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: built-test-site
+          path: ${{ github.workspace }}/artifact-test
+
+      - name: Checkout pages content branch
+        id: checkout_pages_content
+        uses: actions/checkout@v4
+        continue-on-error: true
+        with:
+          ref: pages-content
+          fetch-depth: 0
+          path: pages-content
+
+      - name: Initialize pages content branch if missing
+        if: steps.checkout_pages_content.outcome != 'success'
+        run: |
+          mkdir -p pages-content
+          cd pages-content
+          if [ ! -d .git ]; then
+            git init
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          if git remote get-url origin >/dev/null 2>&1; then
+            git remote set-url origin "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+          else
+            git remote add origin "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+          fi
+          git checkout -B pages-content
+          touch .nojekyll
+          git add .nojekyll
+          if ! git rev-parse --verify HEAD >/dev/null 2>&1; then
+            git commit -m "ci: initialize pages-content store"
+          elif ! git diff --cached --quiet; then
+            git commit -m "ci: initialize pages-content store"
+          fi
+          git push -u origin pages-content
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Update pages content for feature branch
+        run: |
+          branch_path="${GITHUB_REF_NAME}"
+          src="${GITHUB_WORKSPACE}/artifact-test"
+          if [ -d "${src}/test" ]; then
+            src="${src}/test"
+          fi
+          test -f "${src}/search.html"
+          test -f "${src}/search-debug.html"
+          test -d "${src}/ssTest"
+
+          cd pages-content
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git remote set-url origin "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+
+          mkdir -p previews
+          rm -rf "previews/branch-${branch_path}"
+          mkdir -p "previews/branch-${branch_path}"
+          cp -R "${src}/." "previews/branch-${branch_path}/"
+
+          git add -A
+          if git diff --cached --quiet; then
+            echo "No pages-content changes to commit."
+          else
+            git commit -m "ci: update preview for ${GITHUB_REF_NAME}"
+            git push origin HEAD:pages-content
+          fi
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Assemble site from pages content
+        run: |
+          rm -rf site
+          mkdir -p site
+          cp -R pages-content/. site/
+          rm -rf site/.git
+          echo "Feature preview path: previews/branch-${GITHUB_REF_NAME}/search.html"
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: ./site
+
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
+
+  cleanup-feature-preview:
+    name: Cleanup Feature Preview
+    if: github.event_name == 'delete' && github.event.ref_type == 'branch' && startsWith(github.event.ref, 'feature/')
+    concurrency:
+      group: pages-content
+      cancel-in-progress: false
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Configure GitHub Pages
+        uses: actions/configure-pages@v5
+
+      - name: Checkout pages content branch
+        id: checkout_pages_content
+        uses: actions/checkout@v4
+        continue-on-error: true
+        with:
+          ref: pages-content
+          fetch-depth: 0
+          path: pages-content
+
+      - name: Remove deleted branch preview from pages content
+        id: cleanup_store
+        if: steps.checkout_pages_content.outcome == 'success'
+        run: |
+          branch_path="${{ github.event.ref }}"
+          cd pages-content
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git remote set-url origin "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+
+          rm -rf "previews/branch-${branch_path}"
+          git add -A
+
+          if git diff --cached --quiet; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          git commit -m "ci: remove preview for deleted branch ${{ github.event.ref }}"
+          git push origin HEAD:pages-content
+          echo "changed=true" >> "$GITHUB_OUTPUT"
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Assemble site from pages content
+        if: steps.cleanup_store.outputs.changed == 'true'
+        run: |
+          rm -rf site
+          mkdir -p site
+          cp -R pages-content/. site/
+          rm -rf site/.git
+
+      - name: Upload Pages artifact
+        if: steps.cleanup_store.outputs.changed == 'true'
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: ./site
+
+      - name: Deploy to GitHub Pages
+        if: steps.cleanup_store.outputs.changed == 'true'
+        id: deployment
+        uses: actions/deploy-pages@v4
