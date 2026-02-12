@@ -78,7 +78,7 @@ jobs:
           echo "version=${next_version}" >> "$GITHUB_OUTPUT"
           echo "tag=v${next_version}" >> "$GITHUB_OUTPUT"
 
-      - name: Build and test project
+      - name: Build project
         run: ant -f build.xml all makeDebugSearchPage
 
       - name: Build release archives
