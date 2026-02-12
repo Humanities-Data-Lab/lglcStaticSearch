@@ -47,38 +47,40 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git remote set-url origin "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
-          push_with_rebase_retry() {
-            for attempt in 1 2 3; do
-              if git push origin HEAD:pages-content; then
-                return 0
-              fi
+          max_attempts=3
+          attempt=1
+          while [ "${attempt}" -le "${max_attempts}" ]; do
+            git fetch origin pages-content
+            git checkout --detach origin/pages-content
 
-              if [ "${attempt}" -eq 3 ]; then
-                return 1
-              fi
+            if [ ! -d "${preview_dir}" ]; then
+              echo "Cannot find ${preview_dir}; nothing to promote."
+              exit 1
+            fi
 
-              echo "Push failed on attempt ${attempt}; rebasing onto latest pages-content."
-              git fetch origin pages-content
-              git rebase origin/pages-content
-            done
-          }
+            rm -rf "${staging_dir}"
+            mkdir -p "$(dirname "${staging_dir}")"
+            cp -R "${preview_dir}" "${staging_dir}"
 
-          if [ ! -d "${preview_dir}" ]; then
-            echo "Cannot find ${preview_dir}; nothing to promote."
-            exit 1
-          fi
+            git add -A
+            if git diff --cached --quiet; then
+              echo "No staging changes to commit."
+              exit 0
+            fi
 
-          rm -rf "${staging_dir}"
-          mkdir -p "$(dirname "${staging_dir}")"
-          cp -R "${preview_dir}" "${staging_dir}"
-
-          git add -A
-          if git diff --cached --quiet; then
-            echo "No staging changes to commit."
-          else
             git commit -m "ci: promote ${preview_dir} to ${staging_dir}"
-            push_with_rebase_retry
-          fi
+            if git push origin HEAD:pages-content; then
+              exit 0
+            fi
+
+            if [ "${attempt}" -eq "${max_attempts}" ]; then
+              echo "Failed to push promoted staging after ${max_attempts} attempts."
+              exit 1
+            fi
+
+            echo "Push failed on attempt ${attempt}; retrying with latest pages-content."
+            attempt=$((attempt + 1))
+          done
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
@@ -152,50 +154,53 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git remote set-url origin "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
-          push_with_rebase_retry() {
-            for attempt in 1 2 3; do
-              if git push origin HEAD:pages-content; then
-                return 0
-              fi
-
-              if [ "${attempt}" -eq 3 ]; then
-                return 1
-              fi
-
-              echo "Push failed on attempt ${attempt}; rebasing onto latest pages-content."
-              git fetch origin pages-content
-              git rebase origin/pages-content
-            done
-          }
 
           open_numbers=" ${{ steps.open_prs.outputs.numbers }} "
-          changed=false
+          max_attempts=3
+          attempt=1
+          while [ "${attempt}" -le "${max_attempts}" ]; do
+            git fetch origin pages-content
+            git checkout --detach origin/pages-content
 
-          shopt -s nullglob
-          for dir in staging/pr-*; do
-            [ -d "${dir}" ] || continue
-            pr_number="${dir#staging/pr-}"
-            if [[ "${open_numbers}" != *" ${pr_number} "* ]]; then
-              echo "Removing orphaned staging page ${dir}"
-              rm -rf "${dir}"
-              changed=true
+            changed=false
+            shopt -s nullglob
+            for dir in staging/pr-*; do
+              [ -d "${dir}" ] || continue
+              pr_number="${dir#staging/pr-}"
+              if [[ "${open_numbers}" != *" ${pr_number} "* ]]; then
+                echo "Removing orphaned staging page ${dir}"
+                rm -rf "${dir}"
+                changed=true
+              fi
+            done
+
+            if [ "${changed}" != true ]; then
+              echo "No orphaned staging pages found."
+              echo "changed=false" >> "$GITHUB_OUTPUT"
+              exit 0
             fi
-          done
 
-          if [ "${changed}" = true ]; then
             git add -A
             if git diff --cached --quiet; then
               echo "No tracked staging changes to commit."
               echo "changed=false" >> "$GITHUB_OUTPUT"
               exit 0
             fi
+
             git commit -m "ci: remove orphaned staging pages"
-            push_with_rebase_retry
-            echo "changed=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "No orphaned staging pages found."
-            echo "changed=false" >> "$GITHUB_OUTPUT"
-          fi
+            if git push origin HEAD:pages-content; then
+              echo "changed=true" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+
+            if [ "${attempt}" -eq "${max_attempts}" ]; then
+              echo "Failed to push orphaned staging cleanup after ${max_attempts} attempts."
+              exit 1
+            fi
+
+            echo "Push failed on attempt ${attempt}; retrying with latest pages-content."
+            attempt=$((attempt + 1))
+          done
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
