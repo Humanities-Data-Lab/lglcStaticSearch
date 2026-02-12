@@ -1,1 +1,0 @@
-{"stem":"remov","instances":[{"docUri":"apostrophes.html","score":1,"contexts":[{"form":"removing","weight":"1","pos":157,"context":"...the English stemmer treats apostrophe as a letter, <mark>removing<\/mark> it from the beginning of a word, where...","fid":"text","in":["ssCtx1"]}]}]}

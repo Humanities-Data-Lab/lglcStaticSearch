@@ -1,1 +1,0 @@
-{"stem":"element","instances":[{"docUri":"index.html","score":2,"contexts":[{"form":"elements","weight":"1","pos":87,"context":"Good range of HTML <mark>elements<\/mark> providing scope for testing context stuff."},{"form":"elements","weight":"1","pos":160,"context":"Inline <mark>elements<\/mark> whose boundaries should be ignored when indexing."}]}]}
