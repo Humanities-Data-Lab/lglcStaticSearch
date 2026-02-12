@@ -102,10 +102,25 @@ jobs:
         run: |
           mkdir -p pages-content
           cd pages-content
-          git init
-          git checkout -b pages-content
-          git remote add origin "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+          if [ ! -d .git ]; then
+            git init
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          if git remote get-url origin >/dev/null 2>&1; then
+            git remote set-url origin "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+          else
+            git remote add origin "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+          fi
+          git checkout -B pages-content
           touch .nojekyll
+          git add .nojekyll
+          if ! git rev-parse --verify HEAD >/dev/null 2>&1; then
+            git commit -m "ci: initialize pages-content store"
+          elif ! git diff --cached --quiet; then
+            git commit -m "ci: initialize pages-content store"
+          fi
+          git push -u origin pages-content
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
