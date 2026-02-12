@@ -79,6 +79,57 @@ jobs:
       - name: Build release archives
         run: ant -f buildRelease.xml all
 
+      - name: Bundle built test pages
+        run: |
+          python3 - <<'PY'
+          import os
+          import shutil
+          import tarfile
+          import zipfile
+          from pathlib import Path
+
+          workspace = Path(os.environ["GITHUB_WORKSPACE"])
+          version = os.environ["RELEASE_VERSION"]
+          test_dir = workspace / "test"
+
+          required_paths = [
+              test_dir / "search.html",
+              test_dir / "search-debug.html",
+              test_dir / "ssTest",
+          ]
+          missing = [str(path) for path in required_paths if not path.exists()]
+          if missing:
+              raise SystemExit(f"Missing expected test outputs: {', '.join(missing)}")
+
+          dist_dir = workspace / "dist"
+          dist_dir.mkdir(parents=True, exist_ok=True)
+
+          bundle_root_name = f"staticSearch-test-pages_{version}"
+          staging_dir = workspace / "_bundle_test_pages"
+          if staging_dir.exists():
+              shutil.rmtree(staging_dir)
+
+          staged_bundle_root = staging_dir / bundle_root_name
+          shutil.copytree(test_dir, staged_bundle_root)
+
+          tar_path = dist_dir / f"{bundle_root_name}.tar.gz"
+          with tarfile.open(tar_path, "w:gz") as tar_file:
+              tar_file.add(staged_bundle_root, arcname=bundle_root_name)
+
+          zip_path = dist_dir / f"{bundle_root_name}.zip"
+          with zipfile.ZipFile(zip_path, "w", compression=zipfile.ZIP_DEFLATED) as zip_file:
+              for source_path in staged_bundle_root.rglob("*"):
+                  if source_path.is_file():
+                      archive_path = source_path.relative_to(staging_dir)
+                      zip_file.write(source_path, archive_path)
+
+          shutil.rmtree(staging_dir)
+          print(f"Created {tar_path}")
+          print(f"Created {zip_path}")
+          PY
+        env:
+          RELEASE_VERSION: ${{ steps.bump.outputs.version }}
+
       - name: Commit and push EDITION
         if: github.ref_name == 'dev'
         run: |
