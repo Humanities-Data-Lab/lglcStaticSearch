@@ -1,1 +1,0 @@
-{"stem":"diaeresi","instances":[{"docUri":"apostrophes.html","score":1,"contexts":[{"form":"diaeresis","weight":"1","pos":198,"context":"...the tokenizer, including a word containing a combining <mark>diaeresis<\/mark> (U+0308, for issue #164). For...","fid":"text"}]}]}
