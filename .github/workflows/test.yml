@@ -91,7 +91,7 @@ jobs:
       id-token: write
     environment:
       name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
+      url: ${{ format('https://{0}.github.io/{1}/previews/branch-{2}/search.html', github.repository_owner, github.event.repository.name, replace(github.ref_name, '/', '-')) }}
     steps:
       - name: Self checkout
         uses: actions/checkout@v4
