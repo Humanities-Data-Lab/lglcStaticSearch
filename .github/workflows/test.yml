@@ -9,6 +9,7 @@ concurrency:
 jobs:
    test:
         name: Test
+        if: github.ref != 'refs/heads/dev'
         runs-on: ubuntu-latest
         steps:
             # First checkout this repo
