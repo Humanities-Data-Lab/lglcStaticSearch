@@ -79,6 +79,22 @@ jobs:
       - name: Build release archives
         run: ant -f buildRelease.xml all
 
+      - name: Bundle built test pages
+        run: |
+          version="${{ steps.bump.outputs.version }}"
+          bundle_dir="staticSearch_test_pages_${version}"
+
+          test -f "${GITHUB_WORKSPACE}/test/search.html"
+          test -f "${GITHUB_WORKSPACE}/test/search-debug.html"
+          test -d "${GITHUB_WORKSPACE}/test/ssTest"
+
+          rm -rf "${bundle_dir}"
+          mkdir -p "${bundle_dir}"
+          cp -R "${GITHUB_WORKSPACE}/test/." "${bundle_dir}/"
+
+          tar -czf "dist/${bundle_dir}.tar.gz" "${bundle_dir}"
+          rm -rf "${bundle_dir}"
+
       - name: Commit and push EDITION
         if: github.ref_name == 'dev'
         run: |
