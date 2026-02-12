@@ -109,16 +109,11 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
-      pages: write
-      id-token: write
       pull-requests: read
     environment:
       name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
+      url: ${{ format('https://{0}.github.io/{1}/', github.repository_owner, github.event.repository.name) }}
     steps:
-      - name: Configure GitHub Pages
-        uses: actions/configure-pages@v5
-
       - name: Checkout pages content branch
         id: checkout_pages_content
         uses: actions/checkout@v4
