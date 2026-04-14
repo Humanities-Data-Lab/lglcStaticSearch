@@ -183,13 +183,15 @@ jobs:
           git tag -a "${tag}" -m "Release ${tag}"
           git push origin "${tag}"
 
-      # Create a prerelease for the tag and attach dist/*.zip and dist/*.tar.gz.
-      - name: Create GitHub prerelease
+      # Create a draft prerelease first so assets can upload in immutable-release repos.
+      # Publish this draft later (manually or in a follow-up workflow) once assets are attached.
+      - name: Create GitHub draft prerelease
         if: github.ref_name == 'dev'
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ steps.bump.outputs.tag }}
           name: ${{ steps.bump.outputs.tag }}
+          draft: true
           prerelease: true
           generate_release_notes: true
           fail_on_unmatched_files: true
